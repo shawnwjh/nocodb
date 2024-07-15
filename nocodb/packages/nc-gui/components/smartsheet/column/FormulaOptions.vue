@@ -1,0 +1,514 @@
+<script setup lang="ts">
+import type { Ref } from 'vue'
+import type { ListItem as AntListItem } from 'ant-design-vue'
+import jsep from 'jsep'
+import {
+  FormulaError,
+  UITypes,
+  isHiddenCol,
+  jsepCurlyHook,
+  substituteColumnIdWithAliasInFormula,
+  validateFormulaAndExtractTreeWithType,
+} from 'nocodb-sdk'
+import type { ColumnType, FormulaType } from 'nocodb-sdk'
+
+const props = defineProps<{
+  value: any
+}>()
+
+const emit = defineEmits(['update:value'])
+
+const uiTypesNotSupportedInFormulas = [UITypes.QrCode, UITypes.Barcode]
+
+const vModel = useVModel(props, 'value', emit)
+
+const { setAdditionalValidations, validateInfos, sqlUi, column, fromTableExplorer } = useColumnCreateStoreOrThrow()
+
+const { t } = useI18n()
+
+const { predictFunction: _predictFunction } = useNocoEe()
+
+const meta = inject(MetaInj, ref())
+
+const supportedColumns = computed(
+  () =>
+    meta?.value?.columns?.filter((col) => {
+      if (uiTypesNotSupportedInFormulas.includes(col.uidt as UITypes)) {
+        return false
+      }
+
+      if (isHiddenCol(col)) {
+        return false
+      }
+
+      return true
+    }) || [],
+)
+const { getMeta } = useMetas()
+
+const suggestionPreviewed = ref<Record<any, string> | undefined>()
+
+const showFunctionList = ref<boolean>(true)
+
+const validators = {
+  formula_raw: [
+    {
+      validator: (_: any, formula: any) => {
+        return (async () => {
+          if (!formula?.trim()) throw new Error('Required')
+
+          try {
+            await validateFormulaAndExtractTreeWithType({
+              column: column.value,
+              formula,
+              columns: supportedColumns.value,
+              clientOrSqlUi: sqlUi.value,
+              getMeta,
+            })
+          } catch (e: any) {
+            if (e instanceof FormulaError && e.extra?.key) {
+              throw new Error(t(e.extra.key, e.extra))
+            }
+
+            throw new Error(e.message)
+          }
+        })()
+      },
+    },
+  ],
+}
+
+const availableFunctions = formulaList
+
+const availableBinOps = ['+', '-', '*', '/', '>', '<', '==', '<=', '>=', '!=', '&']
+
+const autocomplete = ref(false)
+
+const formulaRef = ref()
+
+const variableListRef = ref<(typeof AntListItem)[]>([])
+
+const sugOptionsRef = ref<(typeof AntListItem)[]>([])
+
+const wordToComplete = ref<string | undefined>('')
+
+const selected = ref(0)
+
+const sortOrder: Record<string, number> = {
+  column: 0,
+  function: 1,
+  op: 2,
+}
+
+const suggestionsList = computed(() => {
+  const unsupportedFnList = sqlUi.value.getUnsupportedFnList()
+  return (
+    [
+      ...availableFunctions.map((fn: string) => ({
+        text: `${fn}()`,
+        type: 'function',
+        description: formulas[fn].description,
+        syntax: formulas[fn].syntax,
+        examples: formulas[fn].examples,
+        docsUrl: formulas[fn].docsUrl,
+        unsupported: unsupportedFnList.includes(fn),
+      })),
+      ...supportedColumns.value
+        .filter((c) => {
+          // skip system LTAR columns
+          if (c.uidt === UITypes.LinkToAnotherRecord && c.system) return false
+          // v1 logic? skip the current column
+          if (!column) return true
+          return column.value?.id !== c.id
+        })
+        .map((c: any) => ({
+          text: c.title,
+          type: 'column',
+          icon: getUIDTIcon(c.uidt) ? markRaw(getUIDTIcon(c.uidt)!) : undefined,
+          uidt: c.uidt,
+        })),
+      ...availableBinOps.map((op: string) => ({
+        text: op,
+        type: 'op',
+      })),
+    ]
+      // move unsupported functions to the end
+      .sort((a: Record<string, any>, b: Record<string, any>) => {
+        if (a.unsupported && !b.unsupported) {
+          return 1
+        }
+        if (!a.unsupported && b.unsupported) {
+          return -1
+        }
+        return 0
+      })
+  )
+})
+
+// set default suggestion list
+const suggestion: Ref<Record<string, any>[]> = ref(suggestionsList.value)
+
+const acTree = computed(() => {
+  const ref = new NcAutocompleteTree()
+  for (const sug of suggestionsList.value) {
+    ref.add(sug)
+  }
+  return ref
+})
+
+const suggestedFormulas = computed(() => {
+  return suggestion.value.filter((s) => s && s.type !== 'column')
+})
+
+const variableList = computed(() => {
+  return suggestion.value.filter((s) => s && s.type === 'column')
+})
+
+function isCurlyBracketBalanced() {
+  // count number of opening curly brackets and closing curly brackets
+  const cntCurlyBrackets = (formulaRef.value.$el.value.match(/\{|}/g) || []).reduce(
+    (acc: Record<number, number>, cur: number) => {
+      acc[cur] = (acc[cur] || 0) + 1
+      return acc
+    },
+    {},
+  )
+  return (cntCurlyBrackets['{'] || 0) === (cntCurlyBrackets['}'] || 0)
+}
+
+function appendText(item: Record<string, any>) {
+  const text = item.text
+  const len = wordToComplete.value?.length || 0
+
+  if (item.type === 'function') {
+    vModel.value.formula_raw = insertAtCursor(formulaRef.value.$el, text, len, 1)
+  } else if (item.type === 'column') {
+    vModel.value.formula_raw = insertAtCursor(formulaRef.value.$el, `{${text}}`, len + +!isCurlyBracketBalanced())
+  } else {
+    vModel.value.formula_raw = insertAtCursor(formulaRef.value.$el, text, len)
+  }
+  autocomplete.value = false
+  wordToComplete.value = ''
+  if (item.type === 'function' || item.type === 'op') {
+    // if function / operator is chosen, display columns only
+    suggestion.value = suggestionsList.value.filter((f) => f.type === 'column')
+  } else {
+    // show all options if column is chosen
+    suggestion.value = suggestionsList.value
+  }
+}
+
+const handleInputDeb = useDebounceFn(function () {
+  handleInput()
+}, 250)
+
+function handleInput() {
+  selected.value = 0
+  suggestion.value = []
+  const query = getWordUntilCaret(formulaRef.value.$el)
+  const parts = query.split(/\W+/)
+  wordToComplete.value = parts.pop() || ''
+  suggestion.value = acTree.value
+    .complete(wordToComplete.value)
+    ?.sort((x: Record<string, any>, y: Record<string, any>) => sortOrder[x.type] - sortOrder[y.type])
+
+  if (suggestion.value.length > 0 && suggestion.value[0].type !== 'column') {
+    suggestionPreviewed.value = suggestion.value[0]
+  }
+
+  if (!isCurlyBracketBalanced()) {
+    suggestion.value = suggestion.value.filter((v) => v.type === 'column')
+    showFunctionList.value = false
+  } else if (!showFunctionList.value) {
+    showFunctionList.value = true
+  }
+
+  autocomplete.value = !!suggestion.value.length
+}
+
+function selectText() {
+  if (suggestion.value && selected.value > -1 && selected.value < suggestionsList.value.length) {
+    if (selected.value < suggestedFormulas.value.length) {
+      if (suggestedFormulas.value[selected.value].unsupported) return
+      appendText(suggestedFormulas.value[selected.value])
+    } else {
+      appendText(variableList.value[selected.value + suggestedFormulas.value.length])
+    }
+  }
+
+  selected.value = 0
+}
+
+function suggestionListUp() {
+  if (suggestion.value) {
+    selected.value = --selected.value > -1 ? selected.value : suggestion.value.length - 1
+    suggestionPreviewed.value = suggestedFormulas.value[selected.value]
+    scrollToSelectedOption()
+  }
+}
+
+function suggestionListDown() {
+  if (suggestion.value) {
+    selected.value = ++selected.value % suggestion.value.length
+    suggestionPreviewed.value = suggestedFormulas.value[selected.value]
+
+    scrollToSelectedOption()
+  }
+}
+
+function scrollToSelectedOption() {
+  nextTick(() => {
+    if (sugOptionsRef.value[selected.value]) {
+      try {
+        sugOptionsRef.value[selected.value].$el.scrollIntoView({
+          block: 'nearest',
+          inline: 'start',
+        })
+      } catch (e) {}
+    }
+  })
+}
+
+// set default value
+if ((column.value?.colOptions as any)?.formula_raw) {
+  vModel.value.formula_raw =
+    substituteColumnIdWithAliasInFormula(
+      (column.value?.colOptions as FormulaType)?.formula,
+      meta?.value?.columns as ColumnType[],
+      (column.value?.colOptions as any)?.formula_raw,
+    ) || ''
+}
+
+// set additional validations
+setAdditionalValidations({
+  ...validators,
+})
+
+onMounted(() => {
+  jsep.plugins.register(jsepCurlyHook)
+})
+
+const suggestionPreviewPostion = ref({
+  top: '0px',
+  left: '344px',
+})
+
+onMounted(() => {
+  until(() => formulaRef.value?.$el as Ref<HTMLTextAreaElement>)
+    .toBeTruthy()
+    .then(() => {
+      setTimeout(() => {
+        const textAreaPosition = formulaRef.value?.$el?.getBoundingClientRect()
+        if (!textAreaPosition) return
+
+        suggestionPreviewPostion.value.top = `${textAreaPosition.top}px`
+
+        if (fromTableExplorer?.value || textAreaPosition.left > 352) {
+          suggestionPreviewPostion.value.left = `${textAreaPosition.left - 344}px`
+        } else {
+          suggestionPreviewPostion.value.left = `${textAreaPosition.right + 8}px`
+        }
+      }, 250)
+    })
+})
+
+const handleKeydown = (e: KeyboardEvent) => {
+  e.stopPropagation()
+  switch (e.key) {
+    case 'ArrowUp': {
+      e.preventDefault()
+      suggestionListUp()
+      break
+    }
+    case 'ArrowDown': {
+      e.preventDefault()
+      suggestionListDown()
+      break
+    }
+    case 'Enter': {
+      e.preventDefault()
+      selectText()
+      break
+    }
+  }
+}
+</script>
+
+<template>
+  <div class="formula-wrapper relative">
+    <div
+      v-if="suggestionPreviewed && !suggestionPreviewed.unsupported && suggestionPreviewed.type === 'function'"
+      class="w-84 fixed bg-white z-10 pl-3 pt-3 border-1 shadow-md rounded-xl"
+      :style="{
+        left: suggestionPreviewPostion.left,
+        top: suggestionPreviewPostion.top,
+      }"
+    >
+      <div class="pr-3">
+        <div class="flex flex-row w-full justify-between pb-2 border-b-1">
+          <div class="flex items-center gap-x-1 font-semibold text-base text-gray-600">
+            <component :is="iconMap.function" class="text-lg" />
+            {{ suggestionPreviewed.text }}
+          </div>
+          <NcButton type="text" size="small" class="!h-7 !w-7 !min-w-0" @click="suggestionPreviewed = undefined">
+            <GeneralIcon icon="close" />
+          </NcButton>
+        </div>
+      </div>
+      <div class="flex flex-col max-h-120 nc-scrollbar-thin pr-2">
+        <div class="flex mt-3 text-sm">{{ suggestionPreviewed.description }}</div>
+
+        <div class="text-gray-500 uppercase text-xs mt-3 mb-2">Syntax</div>
+        <div class="bg-white rounded-md py-1 px-2 border-1">{{ suggestionPreviewed.syntax }}</div>
+        <div class="text-gray-500 uppercase text-xs mt-3 mb-2">Examples</div>
+        <div
+          v-for="(example, index) of suggestionPreviewed.examples"
+          :key="example"
+          class="bg-gray-100 py-1 px-2"
+          :class="{
+            'border-t-1 border-gray-200': index !== 0,
+            'rounded-b-md': index === suggestionPreviewed.examples.length - 1 && suggestionPreviewed.examples.length !== 1,
+            'rounded-t-md': index === 0 && suggestionPreviewed.examples.length !== 1,
+            'rounded-md': suggestionPreviewed.examples.length === 1,
+          }"
+        >
+          {{ example }}
+        </div>
+      </div>
+      <div class="flex flex-row mt-3 mb-3 justify-end pr-3">
+        <a v-if="suggestionPreviewed.docsUrl" target="_blank" rel="noopener noreferrer" :href="suggestionPreviewed.docsUrl">
+          <NcButton type="text" size="small" class="!text-gray-400 !hover:text-gray-700 !text-xs"
+            >View in Docs
+            <GeneralIcon icon="openInNew" class="ml-1" />
+          </NcButton>
+        </a>
+      </div>
+    </div>
+    <a-form-item v-bind="validateInfos.formula_raw" :label="$t('datatype.Formula')">
+      <!-- <GeneralIcon
+        v-if="isEeUI"
+        icon="magic"
+        :class="{ 'nc-animation-pulse': loadMagic }"
+        class="text-orange-400 cursor-pointer absolute right-1 top-1 z-10"
+        @click="predictFunction()"
+      /> -->
+      <a-textarea
+        ref="formulaRef"
+        v-model:value="vModel.formula_raw"
+        class="nc-formula-input !rounded-md"
+        @keydown="handleKeydown"
+        @change="handleInputDeb"
+      />
+    </a-form-item>
+
+    <div class="h-[250px] overflow-auto nc-scrollbar-thin border-1 border-gray-200 rounded-lg mt-4">
+      <template v-if="suggestedFormulas && showFunctionList">
+        <div class="border-b-1 bg-gray-50 px-3 py-1 uppercase text-gray-600 text-xs font-semibold sticky top-0 z-10">
+          Formulas
+        </div>
+
+        <a-list :data-source="suggestedFormulas" :locale="{ emptyText: $t('msg.formula.noSuggestedFormulaFound') }">
+          <template #renderItem="{ item, index }">
+            <a-list-item
+              :ref="
+                (el) => {
+                  sugOptionsRef[index] = el
+                }
+              "
+              class="cursor-pointer !overflow-hidden hover:bg-gray-50"
+              :class="{
+                '!bg-gray-100': selected === index,
+                'cursor-not-allowed': item.unsupported,
+              }"
+              @click.prevent.stop="!item.unsupported && appendText(item)"
+              @mouseenter="suggestionPreviewed = item"
+            >
+              <a-list-item-meta>
+                <template #title>
+                  <div class="flex items-center gap-x-1" :class="{ 'text-gray-400': item.unsupported }">
+                    <component :is="iconMap.function" v-if="item.type === 'function'" class="w-4 h-4 !text-gray-600" />
+
+                    <component :is="iconMap.calculator" v-if="item.type === 'op'" class="w-4 h-4 !text-gray-600" />
+
+                    <component :is="item.icon" v-if="item.type === 'column'" class="w-4 h-4 !text-gray-600" />
+                    <span class="text-small leading-[18px]" :class="{ 'text-gray-800': !item.unsupported }">{{ item.text }}</span>
+                  </div>
+                  <div v-if="item.unsupported" class="ml-5 text-gray-400 text-xs">{{ $t('msg.formulaNotSupported') }}</div>
+                </template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
+      </template>
+
+      <template v-if="variableList">
+        <div class="border-b-1 bg-gray-50 px-3 py-1 uppercase text-gray-600 text-xs font-semibold sticky top-0 z-10">Fields</div>
+
+        <a-list
+          ref="variableListRef"
+          :data-source="variableList"
+          :locale="{ emptyText: $t('msg.formula.noSuggestedFieldFound') }"
+          class="!overflow-hidden"
+        >
+          <template #renderItem="{ item, index }">
+            <a-list-item
+              :ref="
+                (el) => {
+                  sugOptionsRef[index + suggestedFormulas.length] = el
+                }
+              "
+              :class="{
+                '!bg-gray-100': selected === index + suggestedFormulas.length,
+              }"
+              class="cursor-pointer hover:bg-gray-50"
+              @click.prevent.stop="appendText(item)"
+            >
+              <a-list-item-meta class="nc-variable-list-item">
+                <template #title>
+                  <div class="flex items-center gap-x-1 justify-between">
+                    <div class="flex items-center gap-x-1 rounded-md bg-gray-200 px-1 h-5">
+                      <component :is="item.icon" class="w-4 h-4 !text-gray-600" />
+
+                      <span class="text-small leading-[18px] text-gray-800 font-weight-500">{{ item.text }}</span>
+                    </div>
+
+                    <NcButton
+                      size="small"
+                      type="text"
+                      class="nc-variable-list-item-use-field-btn !h-7 px-3 !text-small invisible"
+                    >
+                      {{ $t('general.use') }} {{ $t('objects.field').toLowerCase() }}
+                    </NcButton>
+                  </div>
+                </template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
+      </template>
+    </div>
+  </div>
+</template>
+
+<style lang="scss" scoped>
+:deep(.ant-list-item) {
+  @apply !py-0 !px-2;
+
+  &:not(:has(.nc-variable-list-item)) {
+    @apply !py-[7px] !px-2;
+  }
+  .nc-variable-list-item {
+    @apply min-h-8 flex items-center;
+  }
+  .ant-list-item-meta-title {
+    @apply m-0;
+  }
+  &.ant-list-item,
+  &.ant-list-item:last-child {
+    @apply !border-b-1 border-gray-200 border-solid;
+  }
+  &:hover .nc-variable-list-item-use-field-btn {
+    @apply visible;
+  }
+}
+</style>
