@@ -3,14 +3,9 @@
 
 Frontend - localhost:3000<br>
 ```bash
-cd frontend
+cd noco-frontend
 npm i
-npm start
+npm run dev
 ```
 
-Backend (NocoDB) - localhost:8080<br>
-```bash
-cd nocodb
-pnpm bootstrap
-pnpm start:backend
-```
+Database hosted on NocoDB can be accessed at [**https://noco.skrt.me**](https://noco.skrt.me/)

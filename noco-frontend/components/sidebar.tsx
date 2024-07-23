@@ -1,5 +1,6 @@
 "use client"
 import React, { useEffect, useState } from 'react';
+import {User} from "@nextui-org/react";
 import {
   LogIn,
   LogOut,
@@ -66,11 +67,11 @@ const Sidebar: React.FC = () => {
   useEffect(() => {
     const fetchBases = async () => {
       try {
-        const basesResponse = await axiosInstance.get('/bases');
+        const basesResponse = await axiosInstance.get('/meta/bases');
         const bases: Base[] = basesResponse.data.list;
 
         const fetchTables = bases.map(async (base) => {
-          const tablesResponse = await axiosInstance.get(`/bases/${base.id}/tables`);
+          const tablesResponse = await axiosInstance.get(`/meta/bases/${base.id}/tables`);
           return {
             ...base,
             tables: tablesResponse.data.list,
@@ -81,7 +82,7 @@ const Sidebar: React.FC = () => {
         setBases(basesWithTables);
       }
       catch (error) {
-        console.error("Failed to fetch bases or tables:", error);
+        console.error("Failed to fetch bases or tables: ", error);
       }
     };
 
@@ -98,7 +99,7 @@ const Sidebar: React.FC = () => {
         <ul className="space-y-2 font-medium">
           {bases.map((base) => (
             <li key={base.id} className="flex">
-              <a href="#" className="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+              <a href={base.id} className="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
                 <Newspaper className="w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" />
                 <span className="ms-3">{base.title}</span>
               </a>
@@ -109,8 +110,8 @@ const Sidebar: React.FC = () => {
                     <DropdownMenuLabel>{base.title}</DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     {base.tables && base.tables.map((table) => (
-                      <a href="#" className="cursor-pointer">
-                        <DropdownMenuItem key={table.id}>{table.title}</DropdownMenuItem>
+                      <a href="#" className="cursor-pointer" key={table.id}>
+                        <DropdownMenuItem>{table.title}</DropdownMenuItem>
                       </a>
                     ))}
                   </DropdownMenuContent>
@@ -128,6 +129,17 @@ const Sidebar: React.FC = () => {
             <a href="#" className="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
               <LogOut className="flex-shrink-0 w-5 h-5 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white" aria-hidden="true" />
               <span className="flex-1 ms-3 whitespace-nowrap">Sign Up</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" className="flex items-center p-2 text-gray-900 rounded-lg dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 group">
+              <User   
+                name="Jane Doe"
+                description="Editor"
+                avatarProps={{
+                  src: "https://i.pravatar.cc/150?u=a04258114e29026702d"
+                }}
+              />
             </a>
           </li>
         </ul>
