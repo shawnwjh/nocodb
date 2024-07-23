@@ -1,6 +1,0 @@
-packages:
-  - 'packages/nocodb-sdk'
-  - 'packages/nc-gui'
-  - 'packages/nc-mail-templates'
-  - 'packages/nocodb'
-  - 'tests/playwright'
