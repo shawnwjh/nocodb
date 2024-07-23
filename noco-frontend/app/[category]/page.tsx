@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import axiosInstance from '@/axios/axiosMiddleware';
 import { AnyNode } from "postcss";
 import {Divider} from "@nextui-org/divider";
@@ -15,6 +15,13 @@ import {
   ModalBody, ModalFooter, 
   Button, 
   User,
+  useDisclosure,
+  Input,
+  Textarea,
+  Dropdown, 
+  DropdownTrigger, 
+  DropdownMenu, 
+  DropdownItem
 } from "@nextui-org/react";
 
 interface Table {
@@ -59,11 +66,20 @@ interface TableRecord {
   record: Row[];  
 }
 
+interface Category {
+  main: string;
+  subs: Array<string>;
+}
+
 export default function Category({ params }: { params: { category: string } }) {
 
   const [records, setRecords] = useState<TableRecord[]>([]);
   const [activeModalId, setActiveModalId] = useState(null);
   const [category, setCategory] = useState('');
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedKeys, setSelectedKeys] = useState(new Set(["Local"]));
+   
+  const {isOpen, onOpen, onOpenChange} = useDisclosure();
 
   const handleOpenModal = (id) => {
     setActiveModalId(id);
@@ -76,6 +92,23 @@ export default function Category({ params }: { params: { category: string } }) {
   useEffect(() => {
     const fetchBaseInfo = async () => {
       try {
+        const tempCategories: Array<Category> = [];
+
+        const bases = await axiosInstance.get('/meta/bases');
+        for (let cat of bases.data.list) {
+          const temp: Category = {
+            main: cat.title,
+            subs: [],
+          }
+          const subs = await axiosInstance.get(`/meta/bases/${cat.id}/tables`);
+          for (let sub of subs.data.list) {
+            temp.subs.push(sub.title);
+          }
+          tempCategories.push(temp);
+        }
+        console.log(tempCategories);
+        setCategories(tempCategories);
+
         const baseResponse = await axiosInstance.get(`/meta/bases/${params.category}`);
         setCategory(baseResponse.data.title);
       }
@@ -109,7 +142,6 @@ export default function Category({ params }: { params: { category: string } }) {
     }
 
     fetchTables();
-    console.log(tableRecords);
   }, [])
 
   return (
@@ -137,7 +169,7 @@ export default function Category({ params }: { params: { category: string } }) {
                   </CardBody>
                 </Card>
               </Button>
-              <Modal isOpen={activeModalId === row.Code} onOpenChange={() => setActiveModalId(null)} scrollBehavior="inside">
+              <Modal isOpen={activeModalId === row.Code} onOpenChange={() => setActiveModalId(null)} scrollBehavior="inside" size="2xl">
                 <ModalContent>
                   <>
                     <ModalHeader className="flex flex-col gap-1">{row.Title}</ModalHeader>
@@ -160,9 +192,6 @@ export default function Category({ params }: { params: { category: string } }) {
                       <Button color="danger" variant="light" onPress={handleCloseModal}>
                         Close
                       </Button>
-                      <Button color="primary" onPress={handleCloseModal}>
-                        Action
-                      </Button>
                     </ModalFooter>
                   </>
                 </ModalContent>
@@ -172,6 +201,72 @@ export default function Category({ params }: { params: { category: string } }) {
           ))}
         </div>
       ))}
+      <div className="fixed bottom-10 right-10">
+        <Button onPress={onOpen} color="primary" radius="lg" className="w-20 h-20 text-4xl">
+          +
+        </Button>
+        <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="5xl">
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader className="flex flex-col gap-1">New Article</ModalHeader>
+                <ModalBody>
+                  <div>Select Category</div>
+                  <Dropdown>
+                    <DropdownTrigger>
+                      <Button 
+                        variant="bordered" 
+                      >
+                        {selectedKeys}
+                      </Button>
+                    </DropdownTrigger>
+                    <DropdownMenu aria-label="Category Select" items={categories} disallowEmptySelection selectionMode="single" selectedKeys={selectedKeys} onSelectionChange={setSelectedKeys}>
+                      {(category) => (
+                        <DropdownItem
+                          key={category.main}
+                        >
+                          {category.main}
+                        </DropdownItem>
+                      )}
+                    </DropdownMenu>
+                  </Dropdown>
+
+                  <Input
+                    autoFocus
+                    label="Sub-category"
+                    placeholder="Enter a sub-category"
+                    variant="bordered"
+                  />
+
+                  <Input
+                    autoFocus
+                    label="Code"
+                    placeholder="Enter a code - e.g. POL001"
+                    variant="bordered"
+                  />
+                  <Input
+                    label="Title"
+                    placeholder="Enter a title"
+                    variant="bordered"
+                  />
+                  <Textarea
+                    label="Content"
+                    placeholder="Enter article content"
+                  />
+                </ModalBody>
+                <ModalFooter>
+                  <Button color="danger" variant="light" onPress={onClose}>
+                    Close
+                  </Button>
+                  <Button color="primary" onPress={onClose}>
+                    Create
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+      </div>
     </div>
   );
 }
